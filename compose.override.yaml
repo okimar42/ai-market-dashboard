@@ -1,0 +1,34 @@
+# Dev-only overrides. Docker Compose auto-loads this file for bare `docker compose`
+# commands (make dev / up / shell / migrate / makemigrations / test / lint ...), but
+# NOT for the prod or e2e stacks, which pass explicit `-f` files. So this changes dev
+# only — prod, e2e, and CI are untouched.
+#
+# Purpose: run `web` as host UID 1000 so the files IT writes into the bind-mounted
+# ./backend are owned by you on the host, not root. `web` is where root-owned tracked
+# files came from: `make makemigrations` (new migration .py) and the ruff/ty/pytest
+# caches from `make lint` / `fmt` / `test`. worker/beat don't write into ./backend
+# (snapshot images go to Postgres, backups to the /data volume), so they're left as-is
+# — which also avoids remapping the worker's root-owned Playwright browser cache.
+services:
+  # Runs once as root (busybox default) before web starts and chowns the root-owned
+  # `app_data` (/data) volume to 1000, so web — now uid 1000 — can read/write it
+  # (secret.salt etc.), including on a freshly created volume. Exits immediately.
+  data-perms:
+    image: busybox
+    command: ["sh", "-c", "chown -R 1000:1000 /data"]
+    volumes:
+      - app_data:/data
+    restart: "no"
+
+  web:
+    user: "1000:1000"
+    environment:
+      # uid 1000 has no home dir in the image: send caches to a writable path, and tell
+      # `uv run` not to sync (the venv is already built and is root-owned / read-only here).
+      HOME: /tmp
+      XDG_CACHE_HOME: /tmp/.cache
+      UV_CACHE_DIR: /tmp/uv-cache
+      UV_NO_SYNC: "1"
+    depends_on:
+      data-perms:
+        condition: service_completed_successfully
